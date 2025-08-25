@@ -243,41 +243,41 @@ elif menu_choice == "Dashboard Preview":
         st.markdown("---")
 
         # --- Add Chart Button and Modal ---
-        if st.button("➕ Add Chart", type="primary"):
-            st.session_state.show_modal = True
+        @st.dialog("Configure New Chart")
+        def configure_chart_dialog():
+            """This function defines the UI for the chart configuration dialog."""
+            chart_type = st.selectbox("Select Chart Type", ["Line Chart", "Tabular Data", "Big Number", "Gauge"])
+            chart_config = {"type": chart_type}
 
-        if st.session_state.show_modal:
-            with st.dialog("Configure New Chart"):
-                chart_type = st.selectbox("Select Chart Type", ["Line Chart", "Tabular Data", "Big Number", "Gauge"])
-                chart_config = {"type": chart_type}
+            # Get available parameters for the selected asset type
+            numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
 
-                # Get available parameters for the selected asset type
-                numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
-
-                if chart_type == "Line Chart":
-                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
-                    chart_config['display_mode'] = st.radio("Display Mode", ["Individual", "Grouped"])
-                    if chart_config['display_mode'] == 'Grouped':
-                        chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
-
-                elif chart_type == "Tabular Data":
-                    all_cols = filtered_df.columns.tolist()
-                    chart_config['parameters'] = st.multiselect("Select Parameters to Display", all_cols)
-
-                elif chart_type == "Big Number":
-                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+            if chart_type == "Line Chart":
+                chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                chart_config['display_mode'] = st.radio("Display Mode", ["Individual", "Grouped"])
+                if chart_config['display_mode'] == 'Grouped':
                     chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
 
-                elif chart_type == "Gauge":
-                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
-                    c1, c2 = st.columns(2)
-                    chart_config['min_val'] = c1.number_input("Minimum Value", value=0)
-                    chart_config['max_val'] = c2.number_input("Maximum Value", value=100)
+            elif chart_type == "Tabular Data":
+                all_cols = filtered_df.columns.tolist()
+                chart_config['parameters'] = st.multiselect("Select Parameters to Display", all_cols)
 
-                if st.button("Add to Dashboard"):
-                    st.session_state.charts.append(chart_config)
-                    st.session_state.show_modal = False
-                    st.rerun()
+            elif chart_type == "Big Number":
+                chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
+
+            elif chart_type == "Gauge":
+                chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                c1, c2 = st.columns(2)
+                chart_config['min_val'] = c1.number_input("Minimum Value", value=0)
+                chart_config['max_val'] = c2.number_input("Maximum Value", value=100)
+
+            if st.button("Add to Dashboard"):
+                st.session_state.charts.append(chart_config)
+                st.rerun()
+
+        if st.button("➕ Add Chart", type="primary"):
+            configure_chart_dialog()
 
         # --- Render Dashboard ---
         if not st.session_state.charts:
