@@ -1,6 +1,300 @@
 import streamlit as st
+import pandas as pd
+import json
+from streamlit_echarts import st_echarts
+import datetime
 
-st.title("🎈 My new app")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="Dynamic Dashboard Generator",
+    page_icon="📊",
+    layout="wide"
 )
+
+# --- Helper Functions ---
+
+def load_and_process_data(uploaded_file):
+    """
+    Loads data from the uploaded JSON file, flattens it, and processes it into a DataFrame.
+    Caches the result to avoid reprocessing on every interaction.
+    """
+    if uploaded_file is None:
+        return pd.DataFrame()
+
+    try:
+        # Load the JSON data
+        data = json.load(uploaded_file)
+
+        # Flatten the data: Each record in the JSON list becomes a row.
+        # The nested 'parameters' dictionary is expanded into columns.
+        records = []
+        for entry in data:
+            flat_record = {
+                'pld': entry.get('pld'),
+                'asset_type': entry.get('asset_type'),
+                'timestamp': entry.get('timestamp')
+            }
+            # Add all parameters to the flat record
+            if 'parameters' in entry and isinstance(entry['parameters'], dict):
+                flat_record.update(entry['parameters'])
+            records.append(flat_record)
+
+        # Create DataFrame
+        df = pd.DataFrame(records)
+
+        # Data Cleaning and Type Conversion
+        if 'timestamp' not in df.columns:
+            st.error("The uploaded JSON must contain a 'timestamp' field in each record.")
+            return pd.DataFrame()
+
+        # Convert timestamp to datetime objects, coercing errors to NaT (Not a Time)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        # Drop rows where timestamp conversion failed
+        df.dropna(subset=['timestamp'], inplace=True)
+
+        return df
+    except Exception as e:
+        st.error(f"An error occurred while processing the file: {e}")
+        return pd.DataFrame()
+
+# --- Chart Rendering Functions ---
+
+def render_line_chart(df, config, key):
+    """Renders a line chart using ECharts."""
+    st.subheader(f"Line Chart: {config['parameter']}")
+
+    # Individual vs Grouped logic
+    if config['display_mode'] == 'Individual':
+        # Create a line for each individual PLD
+        series_data = []
+        for pld_id, group in df.groupby('pld'):
+            group = group.sort_values('timestamp')
+            series_data.append({
+                "name": pld_id,
+                "type": 'line',
+                "data": group[['timestamp', config['parameter']]].values.tolist(),
+                "showSymbol": False,
+            })
+        legend_data = df['pld'].unique().tolist()
+    else: # Grouped
+        # Group by timestamp and apply aggregation
+        agg_func = config['aggregation']
+        grouped_df = df.groupby(pd.Grouper(key='timestamp', freq='D'))[config['parameter']].agg(agg_func).reset_index()
+        grouped_df = grouped_df.sort_values('timestamp')
+        series_data = [{
+            "name": f"{config['parameter']} ({agg_func})",
+            "type": 'line',
+            "data": grouped_df.values.tolist(),
+            "showSymbol": False,
+        }]
+        legend_data = [f"{config['parameter']} ({agg_func})"]
+
+    options = {
+        "tooltip": {"trigger": 'axis'},
+        "legend": {"data": legend_data, "bottom": 10},
+        "xAxis": {"type": 'time'},
+        "yAxis": {"type": 'value'},
+        "series": series_data,
+        "dataZoom": [{"type": 'inside'}, {"type": 'slider'}]
+    }
+    st_echarts(options=options, height="400px", key=f"line_{key}")
+
+def render_table(df, config, key):
+    """Renders a data table."""
+    st.subheader(f"Tabular Data")
+    display_cols = ['timestamp', 'pld'] + config['parameters']
+    st.dataframe(df[display_cols], use_container_width=True)
+
+def render_big_number(df, config, key):
+    """Renders a big number metric."""
+    st.subheader(f"Big Number: {config['parameter']}")
+    if not df.empty:
+        # Find the last received data for each PLD
+        latest_df = df.sort_values('timestamp').groupby('pld').last().reset_index()
+        # Aggregate the values
+        if config['aggregation'] == 'sum':
+            value = latest_df[config['parameter']].sum()
+        else: # average
+            value = latest_df[config['parameter']].mean()
+        st.metric(
+            label=f"Total {config['parameter']} ({config['aggregation']})",
+            value=f"{value:,.2f}"
+        )
+    else:
+        st.metric(label=f"Total {config['parameter']} ({config['aggregation']})", value="N/A")
+
+def render_gauge(df, config, key):
+    """Renders a gauge chart for a specific asset."""
+    st.subheader(f"Gauge: {config['parameter']}")
+
+    # Dropdown to select a specific PLD for this chart
+    pld_list = df['pld'].unique().tolist()
+    if not pld_list:
+        st.warning("No assets of the selected type found in the date range.")
+        return
+
+    selected_pld = st.selectbox("Select Asset ID (pld) to view:", pld_list, key=f"gauge_pld_{key}")
+
+    if selected_pld:
+        asset_df = df[df['pld'] == selected_pld].sort_values('timestamp')
+        if not asset_df.empty:
+            latest_value = asset_df.iloc[-1][config['parameter']]
+            options = {
+                "series": [
+                    {
+                        "type": 'gauge',
+                        "detail": {"formatter": '{value}'},
+                        "data": [{"value": latest_value, "name": config['parameter']}],
+                        "min": config.get('min_val', 0),
+                        "max": config.get('max_val', 100),
+                        "axisLine": {
+                            "lineStyle": {
+                                "width": 20,
+                                "color": [
+                                    [0.3, '#67e0e3'],
+                                    [0.7, '#37a2da'],
+                                    [1, '#fd666d']
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+            st_echarts(options=options, height="300px", key=f"gauge_{key}")
+        else:
+            st.info(f"No data available for asset {selected_pld} in the selected time range.")
+
+
+# --- Main Application ---
+
+# Initialize session state
+if 'data' not in st.session_state:
+    st.session_state.data = pd.DataFrame()
+if 'charts' not in st.session_state:
+    st.session_state.charts = []
+if 'show_modal' not in st.session_state:
+    st.session_state.show_modal = False
+
+
+# --- Sidebar Navigation ---
+st.sidebar.title("Navigation")
+menu_choice = st.sidebar.radio("Go to", ["Upload JSON", "Dashboard Preview"])
+
+# --- Page 1: Upload JSON ---
+if menu_choice == "Upload JSON":
+    st.title("📄 Upload Asset Data")
+    st.markdown("Upload a JSON file containing asset data to begin generating your dashboard.")
+
+    uploaded_file = st.file_uploader(
+        "Choose a JSON file",
+        type="json",
+        help="The file should be a JSON array of objects, similar to the sample data."
+    )
+
+    if uploaded_file is not None:
+        with st.spinner('Processing data...'):
+            st.session_state.data = load_and_process_data(uploaded_file)
+            if not st.session_state.data.empty:
+                st.success("Data loaded successfully!")
+                st.write("Data Preview:")
+                st.dataframe(st.session_state.data.head())
+                st.write(f"Found **{len(st.session_state.data)}** records.")
+                st.session_state.charts = [] # Reset charts on new data upload
+
+
+# --- Page 2: Dashboard Preview ---
+elif menu_choice == "Dashboard Preview":
+    st.title("📊 Dashboard Preview")
+
+    df = st.session_state.data
+
+    if df.empty:
+        st.warning("Please upload a JSON file first using the 'Upload JSON' page.", icon="👈")
+    else:
+        # --- Global Filters ---
+        st.header("Global Filters")
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        asset_types = df['asset_type'].unique().tolist()
+        selected_asset_type = col1.selectbox("Select Asset Type", asset_types)
+
+        min_date = df['timestamp'].min().date()
+        max_date = df['timestamp'].max().date()
+
+        from_date = col2.date_input("From date", min_date, min_value=min_date, max_value=max_date)
+        to_date = col3.date_input("To date", max_date, min_value=min_date, max_value=max_date)
+
+        # Convert to datetime for comparison
+        from_datetime = datetime.datetime.combine(from_date, datetime.time.min)
+        to_datetime = datetime.datetime.combine(to_date, datetime.time.max)
+
+        # Apply filters
+        filtered_df = df[
+            (df['asset_type'] == selected_asset_type) &
+            (df['timestamp'] >= from_datetime) &
+            (df['timestamp'] <= to_datetime)
+        ]
+
+        st.markdown("---")
+
+        # --- Add Chart Button and Modal ---
+        if st.button("➕ Add Chart", type="primary"):
+            st.session_state.show_modal = True
+
+        if st.session_state.show_modal:
+            with st.dialog("Configure New Chart"):
+                chart_type = st.selectbox("Select Chart Type", ["Line Chart", "Tabular Data", "Big Number", "Gauge"])
+                chart_config = {"type": chart_type}
+
+                # Get available parameters for the selected asset type
+                numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
+
+                if chart_type == "Line Chart":
+                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                    chart_config['display_mode'] = st.radio("Display Mode", ["Individual", "Grouped"])
+                    if chart_config['display_mode'] == 'Grouped':
+                        chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
+
+                elif chart_type == "Tabular Data":
+                    chart_config['parameters'] = st.multiselect("Select Parameters to Display", filtered_df.columns.tolist())
+
+                elif chart_type == "Big Number":
+                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                    chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
+
+                elif chart_type == "Gauge":
+                    chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
+                    c1, c2 = st.columns(2)
+                    chart_config['min_val'] = c1.number_input("Minimum Value", value=0)
+                    chart_config['max_val'] = c2.number_input("Maximum Value", value=100)
+
+                if st.button("Add to Dashboard"):
+                    st.session_state.charts.append(chart_config)
+                    st.session_state.show_modal = False
+                    st.rerun()
+
+        # --- Render Dashboard ---
+        if not st.session_state.charts:
+            st.info("Your dashboard is empty. Click 'Add Chart' to get started.")
+        else:
+            # Create a grid layout. For simplicity, we'll use 2 columns.
+            cols = st.columns(2)
+            for i, config in enumerate(st.session_state.charts):
+                col_index = i % 2
+                with cols[col_index]:
+                    with st.container(border=True):
+                        # Unique key for each chart to prevent Streamlit widget conflicts
+                        chart_key = f"chart_{i}"
+                        if config['type'] == "Line Chart":
+                            render_line_chart(filtered_df, config, chart_key)
+                        elif config['type'] == "Tabular Data":
+                            render_table(filtered_df, config, chart_key)
+                        elif config['type'] == "Big Number":
+                            render_big_number(filtered_df, config, chart_key)
+                        elif config['type'] == "Gauge":
+                            render_gauge(filtered_df, config, chart_key)
+
+                        # Add a remove button for each chart
+                        if st.button(f"Remove Chart {i+1}", key=f"remove_{i}"):
+                            st.session_state.charts.pop(i)
+                            st.rerun()
