@@ -62,7 +62,7 @@ def load_and_process_data(uploaded_file):
 
 def render_line_chart(df, config, key):
     """Renders a line chart using ECharts."""
-    st.subheader(f"Line Chart: {config['parameter']}")
+    st.subheader(f"Line Chart: {config['parameter']} ({config['asset_type']})")
 
     # Individual vs Grouped logic
     if config['display_mode'] == 'Individual':
@@ -70,10 +70,12 @@ def render_line_chart(df, config, key):
         series_data = []
         for pld_id, group in df.groupby('pld'):
             group = group.sort_values('timestamp')
+            # Convert timestamp to ISO format string for JSON serialization
+            chart_data = [[row['timestamp'].isoformat(), row[config['parameter']]] for index, row in group.iterrows()]
             series_data.append({
                 "name": pld_id,
                 "type": 'line',
-                "data": group[['timestamp', config['parameter']]].values.tolist(),
+                "data": chart_data,
                 "showSymbol": False,
             })
         legend_data = df['pld'].unique().tolist()
@@ -82,6 +84,8 @@ def render_line_chart(df, config, key):
         agg_func = config['aggregation']
         grouped_df = df.groupby(pd.Grouper(key='timestamp', freq='D'))[config['parameter']].agg(agg_func).reset_index()
         grouped_df = grouped_df.sort_values('timestamp')
+        # Convert timestamp to ISO format string for JSON serialization
+        grouped_df['timestamp'] = grouped_df['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         series_data = [{
             "name": f"{config['parameter']} ({agg_func})",
             "type": 'line',
@@ -102,14 +106,14 @@ def render_line_chart(df, config, key):
 
 def render_table(df, config, key):
     """Renders a data table."""
-    st.subheader(f"Tabular Data")
+    st.subheader(f"Tabular Data ({config['asset_type']})")
     # Ensure all selected parameters exist in the dataframe
     display_cols = ['timestamp', 'pld'] + [col for col in config['parameters'] if col in df.columns]
     st.dataframe(df[display_cols], use_container_width=True)
 
 def render_big_number(df, config, key):
     """Renders a big number metric."""
-    st.subheader(f"Big Number: {config['parameter']}")
+    st.subheader(f"Big Number: {config['parameter']} ({config['asset_type']})")
     if not df.empty and config['parameter'] in df.columns:
         # Find the last received data for each PLD
         latest_df = df.sort_values('timestamp').groupby('pld').last().reset_index()
@@ -127,7 +131,7 @@ def render_big_number(df, config, key):
 
 def render_gauge(df, config, key):
     """Renders a gauge chart for a specific asset."""
-    st.subheader(f"Gauge: {config['parameter']}")
+    st.subheader(f"Gauge: {config['parameter']} ({config['asset_type']})")
 
     # Dropdown to select a specific PLD for this chart
     pld_list = df['pld'].unique().tolist()
@@ -218,7 +222,8 @@ elif menu_choice == "Dashboard Preview":
         col1, col2, col3 = st.columns([2, 1, 1])
 
         asset_types = df['asset_type'].unique().tolist()
-        selected_asset_type = col1.selectbox("Select Asset Type", asset_types)
+        # Add "All" option to the global filter
+        global_selected_asset_type = col1.selectbox("Select Asset Type to View", ["All"] + asset_types)
 
         # Convert timestamp column to date for min/max values in date_input
         min_date = df['timestamp'].dt.date.min()
@@ -232,25 +237,19 @@ elif menu_choice == "Dashboard Preview":
         from_datetime = pd.Timestamp(from_date, tz=df_timezone)
         to_datetime = pd.Timestamp(to_date, tz=df_timezone) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-
-        # Apply filters
-        filtered_df = df[
-            (df['asset_type'] == selected_asset_type) &
-            (df['timestamp'] >= from_datetime) &
-            (df['timestamp'] <= to_datetime)
-        ].copy()
-
         st.markdown("---")
 
         # --- Add Chart Button and Modal ---
-        @st.dialog("Configure New Chart")
-        def configure_chart_dialog():
-            """This function defines the UI for the chart configuration dialog."""
-            chart_type = st.selectbox("Select Chart Type", ["Line Chart", "Tabular Data", "Big Number", "Gauge"])
-            chart_config = {"type": chart_type}
+        if st.button("➕ Add Chart", type="primary"):
+            st.session_state.show_modal = True
 
-            # Get available parameters for the selected asset type
-            numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
+        if st.session_state.show_modal:
+            with st.dialog("Configure New Chart"):
+                chart_type = st.selectbox("Select Chart Type", ["Line Chart", "Tabular Data", "Big Number", "Gauge"])
+                chart_config = {"type": chart_type}
+
+                # Get available parameters for the selected asset type
+                numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
 
             if chart_type == "Line Chart":
                 chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
@@ -258,9 +257,9 @@ elif menu_choice == "Dashboard Preview":
                 if chart_config['display_mode'] == 'Grouped':
                     chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
 
-            elif chart_type == "Tabular Data":
-                all_cols = filtered_df.columns.tolist()
-                chart_config['parameters'] = st.multiselect("Select Parameters to Display", all_cols)
+                elif chart_type == "Tabular Data":
+                    all_cols = filtered_df.columns.tolist()
+                    chart_config['parameters'] = st.multiselect("Select Parameters to Display", all_cols)
 
             elif chart_type == "Big Number":
                 chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
@@ -283,24 +282,35 @@ elif menu_choice == "Dashboard Preview":
         if not st.session_state.charts:
             st.info("Your dashboard is empty. Click 'Add Chart' to get started.")
         else:
-            # Create a grid layout. For simplicity, we'll use 2 columns.
             cols = st.columns(2)
+            chart_index_to_render = 0
             for i, config in enumerate(st.session_state.charts):
-                col_index = i % 2
-                with cols[col_index]:
-                    with st.container(border=True):
-                        # Unique key for each chart to prevent Streamlit widget conflicts
-                        chart_key = f"chart_{i}"
-                        if config['type'] == "Line Chart":
-                            render_line_chart(filtered_df, config, chart_key)
-                        elif config['type'] == "Tabular Data":
-                            render_table(filtered_df, config, chart_key)
-                        elif config['type'] == "Big Number":
-                            render_big_number(filtered_df, config, chart_key)
-                        elif config['type'] == "Gauge":
-                            render_gauge(filtered_df, config, chart_key)
+                # MODIFICATION: Logic to decide whether to show a chart
+                show_chart = (global_selected_asset_type == "All" or
+                              global_selected_asset_type == config['asset_type'])
 
-                        # Add a remove button for each chart
-                        if st.button(f"Remove Chart {i+1}", key=f"remove_{i}"):
-                            st.session_state.charts.pop(i)
-                            st.rerun()
+                if show_chart:
+                    # Filter the main dataframe for this specific chart's data
+                    chart_df = df[
+                        (df['asset_type'] == config['asset_type']) &
+                        (df['timestamp'] >= from_datetime) &
+                        (df['timestamp'] <= to_datetime)
+                    ].copy()
+
+                    col_index = chart_index_to_render % 2
+                    with cols[col_index]:
+                        with st.container(border=True):
+                            chart_key = f"chart_{i}"
+                            if config['type'] == "Line Chart":
+                                render_line_chart(chart_df, config, chart_key)
+                            elif config['type'] == "Tabular Data":
+                                render_table(chart_df, config, chart_key)
+                            elif config['type'] == "Big Number":
+                                render_big_number(chart_df, config, chart_key)
+                            elif config['type'] == "Gauge":
+                                render_gauge(chart_df, config, chart_key)
+
+                            if st.button(f"Remove Chart {i+1}", key=f"remove_{i}"):
+                                st.session_state.charts.pop(i)
+                                st.rerun()
+                    chart_index_to_render += 1
