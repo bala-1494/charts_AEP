@@ -48,7 +48,8 @@ def load_and_process_data(uploaded_file):
             return pd.DataFrame()
 
         # Convert timestamp to datetime objects, coercing errors to NaT (Not a Time)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        # This will correctly handle the timezone information (e.g., +0530)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
         # Drop rows where timestamp conversion failed
         df.dropna(subset=['timestamp'], inplace=True)
 
@@ -102,13 +103,14 @@ def render_line_chart(df, config, key):
 def render_table(df, config, key):
     """Renders a data table."""
     st.subheader(f"Tabular Data")
-    display_cols = ['timestamp', 'pld'] + config['parameters']
+    # Ensure all selected parameters exist in the dataframe
+    display_cols = ['timestamp', 'pld'] + [col for col in config['parameters'] if col in df.columns]
     st.dataframe(df[display_cols], use_container_width=True)
 
 def render_big_number(df, config, key):
     """Renders a big number metric."""
     st.subheader(f"Big Number: {config['parameter']}")
-    if not df.empty:
+    if not df.empty and config['parameter'] in df.columns:
         # Find the last received data for each PLD
         latest_df = df.sort_values('timestamp').groupby('pld').last().reset_index()
         # Aggregate the values
@@ -137,7 +139,7 @@ def render_gauge(df, config, key):
 
     if selected_pld:
         asset_df = df[df['pld'] == selected_pld].sort_values('timestamp')
-        if not asset_df.empty:
+        if not asset_df.empty and config['parameter'] in asset_df.columns:
             latest_value = asset_df.iloc[-1][config['parameter']]
             options = {
                 "series": [
@@ -218,22 +220,25 @@ elif menu_choice == "Dashboard Preview":
         asset_types = df['asset_type'].unique().tolist()
         selected_asset_type = col1.selectbox("Select Asset Type", asset_types)
 
-        min_date = df['timestamp'].min().date()
-        max_date = df['timestamp'].max().date()
+        # Convert timestamp column to date for min/max values in date_input
+        min_date = df['timestamp'].dt.date.min()
+        max_date = df['timestamp'].dt.date.max()
 
         from_date = col2.date_input("From date", min_date, min_value=min_date, max_value=max_date)
         to_date = col3.date_input("To date", max_date, min_value=min_date, max_value=max_date)
 
-        # Convert to datetime for comparison
-        from_datetime = datetime.datetime.combine(from_date, datetime.time.min)
-        to_datetime = datetime.datetime.combine(to_date, datetime.time.max)
+        # Convert date inputs to timezone-aware datetimes for comparison
+        df_timezone = df['timestamp'].dt.tz
+        from_datetime = pd.Timestamp(from_date, tz=df_timezone)
+        to_datetime = pd.Timestamp(to_date, tz=df_timezone) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
 
         # Apply filters
         filtered_df = df[
             (df['asset_type'] == selected_asset_type) &
             (df['timestamp'] >= from_datetime) &
             (df['timestamp'] <= to_datetime)
-        ]
+        ].copy()
 
         st.markdown("---")
 
@@ -256,7 +261,8 @@ elif menu_choice == "Dashboard Preview":
                         chart_config['aggregation'] = st.radio("Aggregation", ["sum", "mean"], horizontal=True)
 
                 elif chart_type == "Tabular Data":
-                    chart_config['parameters'] = st.multiselect("Select Parameters to Display", filtered_df.columns.tolist())
+                    all_cols = filtered_df.columns.tolist()
+                    chart_config['parameters'] = st.multiselect("Select Parameters to Display", all_cols)
 
                 elif chart_type == "Big Number":
                     chart_config['parameter'] = st.selectbox("Select Parameter", numeric_cols)
