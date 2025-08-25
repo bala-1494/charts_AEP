@@ -70,10 +70,13 @@ def render_line_chart(df, config, key):
         series_data = []
         for pld_id, group in df.groupby('pld'):
             group = group.sort_values('timestamp')
+            # Convert timestamp to string for JSON serialization
+            chart_data = group.copy()
+            chart_data['timestamp'] = chart_data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
             series_data.append({
                 "name": pld_id,
                 "type": 'line',
-                "data": group[['timestamp', config['parameter']]].values.tolist(),
+                "data": chart_data[['timestamp', config['parameter']]].values.tolist(),
                 "showSymbol": False,
             })
         legend_data = df['pld'].unique().tolist()
@@ -82,10 +85,13 @@ def render_line_chart(df, config, key):
         agg_func = config['aggregation']
         grouped_df = df.groupby(pd.Grouper(key='timestamp', freq='D'))[config['parameter']].agg(agg_func).reset_index()
         grouped_df = grouped_df.sort_values('timestamp')
+        # Convert timestamp to string for JSON serialization
+        chart_data = grouped_df.copy()
+        chart_data['timestamp'] = chart_data['timestamp'].dt.strftime('%Y-%m-%d')
         series_data = [{
             "name": f"{config['parameter']} ({agg_func})",
             "type": 'line',
-            "data": grouped_df.values.tolist(),
+            "data": chart_data.values.tolist(),
             "showSymbol": False,
         }]
         legend_data = [f"{config['parameter']} ({agg_func})"]
